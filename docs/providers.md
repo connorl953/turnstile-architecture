@@ -9,8 +9,7 @@ capability the pipeline needs, not a vendor that supplies it:
 | `image` | Still-frame generation |
 | `video` | Short motion-clip generation conditioned on a still |
 | `tts` | Narration synthesis with word-level timestamps |
-| `audio` | Background music generation |
-| `publishing` | Delivery to each destination platform |
+| `publishing` | Delivery to destination platforms (currently one working implementation, operator-invoked) |
 
 ## The shape
 
@@ -19,7 +18,10 @@ Each axis has three parts:
 1. **An abstract base class** defining the axis contract — what goes in, what comes out, and
    which typed errors may be raised. The pipeline is written against this and nothing else.
 2. **One concrete implementation per vendor**, each a self-contained wrapper that translates
-   the vendor's API, response shape, and failure modes into the axis contract.
+   the vendor's API, response shape, and failure modes into the axis contract. Six such
+   implementations currently work. The publishing axis is the exception: its in-engine
+   implementation was retired during a vendor SDK migration and the working publisher now
+   lives outside the engine, invoked by the operator.
 3. **A factory** that reads a config file and constructs the implementation named there.
 
 The pipeline never imports a vendor module. It asks the factory for the provider on an axis
@@ -52,7 +54,8 @@ options cannot break running jobs.
 
 ## Why this earns its complexity
 
-An abstraction layer over six vendors is not free, and in many systems it would be premature.
+An abstraction layer over six vendor implementations is not free, and in many systems it would
+be premature.
 Here it pays for itself for reasons specific to the generative-AI vendor landscape:
 
 **Pricing moves constantly, and it moves a lot.** The same capability can differ several-fold

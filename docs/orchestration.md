@@ -1,7 +1,7 @@
 # Orchestration
 
 The orchestration layer decides *what* runs and *when*, drives each job through the
-pipeline, records everything, and publishes the results. It is the half of the system that
+pipeline, and records everything. It is the half of the system that
 knows about channels, schedules, lifecycle states, and platforms — none of which the
 generation pipeline knows anything about.
 
@@ -59,7 +59,8 @@ The orchestrator wakes on a fixed interval and does four things in order:
 2. **Reload provider configuration.** Vendor selection is re-read each cycle so config edits
    take effect without a restart where possible.
 3. **Schedule and generate.** For each channel found due, run one job to completion.
-4. **Upload pass.** Publish any finished video whose posting window has opened.
+4. **Upload pass.** Intended to publish any finished video whose posting window has
+   opened. This step is currently inert — see *Publishing* below.
 
 Direct CLI entry points exist for each of these — run one job now, run one upload pass, run
 one full cycle — so an operator or tooling can trigger work without waiting for a tick, using
@@ -109,17 +110,24 @@ carrying a retry-after, content refusals, output that succeeded but is unusable,
 failures, and schema-validation failures. Assembly errors in particular carry enough structured
 detail to triage a render failure without reproducing it.
 
-### Partial publish is not failure
+### Publishing is operator-gated, and currently single-platform
 
-The upload pass publishes to each platform independently, and **one platform's failure does not
-block the others.** A video that reaches three of four platforms stays in the ready directory
-with its successes recorded, and the next pass retries only the platform that failed. Only a
-fully successful publish archives the job and marks it uploaded.
+**The daemon does not publish.** This is the largest gap between the system's design and its
+current state, and it is worth stating plainly rather than describing the intent.
 
-This is the single most valuable failure-handling decision in the system, because platform APIs
-fail constantly and independently — rate limits, token expiry, transient policy checks — and
-treating any one of them as fatal would mean routinely re-rendering and re-publishing content
-that was already live somewhere.
+The design called for an upload pass inside the daemon cycle, publishing to each platform
+independently so that one platform's failure would not block the others — a video reaching
+three of four platforms would keep its successes and retry only the failure. Per-platform
+metadata generation for four platforms exists and works.
+
+What actually runs is narrower. The daemon's upload path constructs a publisher that was
+retired during a vendor SDK migration and now raises on construction, so that path is dead. The
+working publisher lives behind a **foreground console tool the operator runs deliberately**, and
+its supported-platform tuple currently contains **one entry: Instagram**.
+
+The practical effect is a clean split: generation is unattended and runs on a timer; publishing
+is a manual step. The independent-per-platform failure model described above is the design the
+code is being moved toward, not a property the system has today.
 
 ### Crash recovery
 

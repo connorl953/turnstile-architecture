@@ -80,8 +80,10 @@ half-migrated state *was* a supported state, for months.
 restored the fallback path immediately. No deploy, no revert.
 
 **Retirement was a cleanup, not a breaking change.** Once a property was reliably present, its
-fallback stopped being consulted. Removing the dead YAML is a tidying task that can happen at
-leisure; it cannot break anything, because nothing reads it any more.
+fallback stopped being consulted. **This has now happened:** PostgreSQL carries the cost-axis and
+series-routing columns directly, and both YAML fallbacks were deleted after the cutover. That was
+always the intended end state — a fallback nobody retires becomes a second, silently diverging
+configuration system.
 
 ### What it cost
 

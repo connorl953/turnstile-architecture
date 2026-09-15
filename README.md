@@ -1,21 +1,19 @@
 # Turnstile — Architecture Notes
 
-Turnstile is an autonomous short-form video pipeline. A single Mac Mini, unattended,
-generates roughly seven finished 9:16 videos a day — one per channel — and publishes them
-to four platforms without a human in the loop. Each episode is assembled from an
-LLM-written script, generated stills, generated motion clips, synthesized narration with
-word-level timing, and a background music bed, then rendered and muxed into a final MP4.
-The operator's only routine interaction is editing configuration and reading a dashboard;
-the system schedules, generates, fails loudly, and publishes on its own.
+Turnstile is a **six-stage media generation pipeline with operator-gated publishing.** A
+single Mac Mini runs one scheduling daemon that, unattended, takes a series format and
+produces finished 9:16 vertical videos — an LLM-written script, generated stills, generated
+motion clips, synthesized narration with word-level timing, an operator-supplied music bed,
+and a React-rendered composition muxed into a final MP4. Publishing is a separate,
+deliberate step the operator triggers.
 
 **This repository is documentation only.** The implementation is private. Nothing here is
 runnable code — it describes the architecture, the tradeoffs, and the reasoning.
 
-The interesting engineering here is not the media generation. It is the daemon
-orchestration, the provider abstraction that lets any vendor be swapped from config, the
-per-axis cost accounting that makes unit economics visible per asset, and the graceful
-degradation strategy that kept the pipeline running through a live control-plane
-migration.
+The interesting engineering is not the media generation. It is the daemon orchestration, the
+provider abstraction that lets vendors be swapped from config, the per-axis cost accounting,
+and the graceful degradation strategy that kept the pipeline running through a live
+control-plane migration.
 
 ---
 
@@ -30,7 +28,7 @@ migration.
                                 │  writes lifecycle + cost
                                 ▼
    ┌────────────────────────────────────────────────────────────┐
-   │  Orchestrator daemon                   (10-minute cycle)   │
+   │  Orchestrator daemon  — the only daemon   (10-min cycle)   │
    │  ┌──────────┐   ┌─────────────┐   ┌────────────────────┐   │
    │  │  sweep   │──►│  scheduler  │──►│    job runner      │   │
    │  │  stale   │   │  which      │   │  drives one job    │   │
@@ -41,11 +39,11 @@ migration.
                                                  │
                                                  ▼
    ┌────────────────────────────────────────────────────────────┐
-   │  Generation pipeline      (channel-blind, seven stages)    │
+   │  Generation pipeline      (channel-blind, six stages)      │
    │                                                            │
    │      script ──► image ──┐                                  │
    │                  tts  ──┼── parallel ──► video ──► assemble│
-   │                  bgm  ──┘                                  │
+   │                  bgm  ──┘                        (Remotion)│
    │                                                            │
    │  emits stage events ────────────────────► control plane    │
    └─────────────────────────────┬──────────────────────────────┘
@@ -54,18 +52,35 @@ migration.
                                  │
                                  ▼
    ┌────────────────────────────────────────────────────────────┐
-   │  Upload pass — each platform independently fallible        │
-   └────┬──────────────┬──────────────┬──────────────┬──────────┘
-        ▼              ▼              ▼              ▼
-    YouTube        Instagram      Facebook        Reddit
-     Shorts          Reels          Reels
+   │  Publishing — OPERATOR-GATED, not part of the daemon cycle │
+   │  a foreground console tool the operator runs deliberately  │
+   └───────────────────────────┬────────────────────────────────┘
+                               ▼
+                          Instagram
 ```
 
 The pipeline is **channel-blind by design**: nothing inside it knows which channel a job
-belongs to, or that a control plane exists at all. It accepts a typed input, emits stage
-events, and returns a typed result or raises a typed error. That single seam is what makes
-the orchestration layer replaceable — and it is why the control-plane migration described
-in [docs/migration.md](docs/migration.md) never required touching the engine.
+belongs to, or that a control plane exists. It accepts a typed input, emits stage events,
+and returns a typed result or raises a typed error. That single seam is what let the
+orchestration layer be replaced wholesale without the engine noticing.
+
+---
+
+## Current state — what runs and what doesn't
+
+Architecture documents tend to describe intent. This section describes the code.
+
+| | |
+|---|---|
+| **Daemons** | **One.** A single `launchd` plist. Generation and scheduling live in one process; an earlier design had three. |
+| **Generation stages** | **Six** — script, image, TTS, BGM, video, assemble. Numbered `s01`–`s07` with a gap: the procedural-graphics stage was absorbed into the render layer and its number retired. |
+| **Rendering** | **Remotion** (Node + React) invoked as a subprocess, then one ffmpeg pass to mux the audio bed. An earlier three-pass ffmpeg assembler was deleted outright. |
+| **Publishing** | **Operator-gated, Instagram only.** The daemon's upload path is not wired to a working publisher; the live path is a foreground console tool. Four-platform metadata generation exists, but only one platform can currently be published to. |
+| **Cost accounting** | **Implemented, disabled.** Nine axes are stamped at every paid stage, but the config flag is off and a null tracker is installed in its place. |
+| **Retries** | **None, anywhere.** There is no retry logic in the daemon or the engine. Every failure is terminal until an operator re-runs the job. |
+| **Tests** | 70 test functions in the engine package. No CI, no linter, no type checking. |
+
+The word *autonomous* applies to generation, not to publishing.
 
 ---
 
@@ -81,16 +96,13 @@ in [docs/migration.md](docs/migration.md) never required touching the engine.
 | Operator UI | Gradio |
 | Secrets | Hosted secrets manager, injected into the environment at process start |
 
-**Scale:** one orchestrator daemon · seven pipeline stages · four publishing platforms ·
-~7 channels · ~210 videos/month.
-
 ---
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| [docs/pipeline.md](docs/pipeline.md) | The seven generation stages and what each produces |
+| [docs/pipeline.md](docs/pipeline.md) | The six generation stages and what each produces |
 | [docs/orchestration.md](docs/orchestration.md) | Daemon model, scheduling, job state machine, failure handling |
 | [docs/providers.md](docs/providers.md) | Provider abstraction — how vendors swap via config |
 | [docs/cost-model.md](docs/cost-model.md) | Per-axis cost accounting and rate caching |
@@ -100,67 +112,68 @@ in [docs/migration.md](docs/migration.md) never required touching the engine.
 
 ## Design decisions
 
-Three choices that shaped the system, and the reasoning behind each.
+### 1. Code-side fallbacks carried the system through the control-plane migration
 
-### 1. Fallbacks maintained code-side during the control-plane migration
+The control plane moved from a hosted document database to PostgreSQL. The complication was
+that the old system's schema could not be extended programmatically — its API accepted
+property additions and silently no-opped, so several fields the design required could not be
+created without manual UI work by the operator.
 
-The control plane moved from a hosted document database to PostgreSQL. The complication
-was that the old system's schema could not be extended programmatically — its API accepted
-property additions and silently no-opped, so several fields the design called for could not
-be created without manual UI work by the operator.
-
-Rather than block the pipeline on operator availability, every field that might be absent
-was given a **code-side fallback in version-controlled YAML**, under a strict precedence
-rule: the control plane wins when the property is present, and the YAML answers when it is
-not.
+Rather than block on operator availability, each missing field was given a **fallback in
+version-controlled YAML**, under a strict precedence rule: the control plane won when the
+property was present; the YAML answered when it wasn't.
 
 The pipeline therefore degraded gracefully instead of failing on missing schema properties.
-A half-migrated system stayed fully operational, each property could be migrated
-independently on the operator's own schedule, and there was no coordinated cutover and no
-downtime. When a property finally landed, its fallback became dead weight rather than a
-breaking change.
+A half-migrated system stayed operational, each property could migrate independently, and
+there was no coordinated cutover.
 
-The cost of this decision is worth naming: two sources of truth for a period, and fallbacks
-that must be deliberately retired or they rot. That was the right trade against an
-unattended pipeline failing silently overnight.
+**Those fallbacks have since been retired.** PostgreSQL holds the columns directly, so the
+`cost_axes` and `channels` YAML fallbacks were removed once the cutover completed — which
+was always the intended end state. The pattern is worth describing precisely because it has
+a defined end: a fallback that is never retired becomes a second, silently diverging
+configuration system.
 
 ### 2. Provider abstraction allowing per-stage vendor substitution without code changes
 
-Each paid capability is an **axis** — script LLM, image, video, text-to-speech, background
-music, publishing. Every axis has an abstract base class, one concrete implementation per
-vendor, and a factory that reads a config file to decide which to construct.
+Each paid capability is an **axis** — script LLM, image, video, text-to-speech, publishing.
+Every axis has an abstract base class, one concrete implementation per vendor, and a factory
+that reads a config file to decide which to construct.
 
-Switching the vendor behind any stage is a config edit and a daemon restart. No code change,
-no redeploy. Adding a vendor means subclassing that axis's base class, dropping the file in,
-and registering it.
+Six abstract base classes are defined; six concrete implementations currently work. Two
+axes have genuine alternatives in place — image can route through either a direct API or an
+aggregator, and video likewise — so for those, switching vendor is a config edit and a
+restart.
 
-This mattered more than it sounds. Generative-AI vendors change pricing, deprecate models,
-and suffer outages on their own schedule. The abstraction made a vendor problem an
-operations decision rather than an engineering project, and it made it cheap to route the
-same axis through a direct API or through an aggregator depending on which was currently
-cheaper or more reliable.
+This matters because generative-AI vendors change pricing, deprecate models, and suffer
+outages on their own schedule. The abstraction makes a vendor problem an operations decision
+rather than an engineering project.
+
+The honest limitation: the abstraction is a per-axis `if` chain in the factory rather than a
+registry, and the pipeline reaches into the provider config for a few generation parameters
+that ought to sit behind the interface. It is a real seam, not a perfect one.
 
 ### 3. Per-axis cost stamping making unit economics visible per generated asset
 
 Every metered operation is attributed to a **canonical cost axis** — tokens in, tokens out,
-images, video-seconds, speech characters, music-seconds, uploads. Rates live in a
-control-plane table, are cached once per cycle into an in-memory rate sheet, and each job is
-stamped with a full cost breakdown and usage record as it completes.
+images, video-seconds, speech characters, uploads. Rates live in a control-plane table, are
+cached once per cycle into an in-memory rate sheet, and each job is stamped with a full cost
+breakdown and usage record as it completes.
 
-This turns a vague monthly invoice into per-asset unit economics. It is what makes it
-possible to establish that a single generated video clip costs more than every other
-component of an episode combined, by multiples — and that fact, once measurable, drives the
-design of every content format built on the system. Formats are authored to push each scene
-down a cost ladder, and the accounting is what proves whether that worked.
+This turns a monthly invoice into per-asset unit economics, which is what establishes that a
+single generated motion clip costs more than every other component of an episode combined.
+That fact drives how content formats get designed — each scene is pushed down a cost ladder
+from free graphics to a still to generated motion, and the accounting is what proves whether
+it worked.
 
-Rates are data, not code, precisely because rates rot. The axis taxonomy is stable; the
-numbers behind it are expected to change without a deploy.
+**It is currently switched off.** The machinery is implemented and wired; a config flag
+installs a null tracker instead, and the rate table needs populating before the numbers mean
+anything. The design is real; the telemetry is not running.
 
 ---
 
 ## A note on scope
 
 The implementation — including all content formats, prompts, provider credentials, and
-channel configuration — lives in a private repository. This repository exists to document
-the architecture for people who want to understand how the system is put together. There is
-no code here, and no attempt to make the system reproducible.
+channel configuration — lives in a private repository. This repository documents the
+architecture for people who want to understand how the system is put together. There is no
+code here, and no attempt to make the system reproducible.

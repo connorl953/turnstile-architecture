@@ -10,18 +10,19 @@ scheduling, persistence, status vocabulary, and publishing lives on the other si
 seam. The engine is testable standalone and the orchestration layer around it was replaced
 wholesale without the engine noticing.
 
-## The seven stages
+## The six stages
 
-Stages are numbered `s01` through `s07`. The numbering is stable even as the set evolves —
-`s06` was a procedural-graphics stage in an earlier version, later absorbed into the render
-layer as reusable components, and its number was retired rather than reused.
+There are **six** stages, numbered `s01` through `s07` with a gap. The numbering is stable
+even as the set evolves — `s06` was a procedural-graphics stage in an earlier version, later
+absorbed into the render layer as reusable components, and its number was retired rather
+than reused. Six stage packages exist on disk; the numbering runs to seven.
 
 | # | Stage | What it does | Output |
 |---|---|---|---|
 | s01 | `script` | An LLM expands a format's meta-prompt into a structured multi-scene script as validated JSON. Schema failure is a typed error, not a retry. | Script JSON |
 | s02 | `image` | Generates a first-frame still per scene, at a generation resolution that is then resampled to the 1080×1920 delivery frame. | One PNG per scene |
 | s03 | `tts` | Synthesizes narration per script segment, returning **word-level timestamps** alongside the audio. | Per-segment audio + alignment manifest |
-| s04 | `bgm` | Background music generation. Three modes: generate a track, use a preset, or reuse a track pinned to a channel's identity. | One music track |
+| s04 | `bgm` | Selects the music bed. **Music is operator-supplied, never generated** — the stage resolves a tag to a curated MP3 the operator has dropped into the asset library, either a per-episode preset or a track pinned to a channel's identity. No provider is called and no cost is incurred. | One music track |
 | s05 | `video` | Generates a short silent motion clip per scene that needs motion, conditioned on that scene's first frame from s02. | One MP4 per motion scene |
 | s06 | *(retired)* | Procedural graphics — countdowns, wheels, score cards. Now implemented as declarative components in the render layer, where they cost nothing to produce. | — |
 | s07 | `assemble` | Renders the composition in the Node render layer via subprocess, builds the audio bed by concatenating narration and mixing music underneath, then muxes audio onto the silent render in a single stream-copy pass. | Final MP4 + sidecar metadata |

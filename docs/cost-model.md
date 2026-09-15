@@ -1,6 +1,6 @@
 # Cost model
 
-The system spends real money on every job, across six vendors, on a schedule nobody is
+The system spends real money on every job, across several vendors, on a schedule nobody is
 watching. Cost accounting is therefore not a reporting feature bolted on at the end — it is a
 first-class part of the architecture, and it changes how content formats get designed.
 
@@ -13,8 +13,7 @@ that is actually billed, not after the vendor or the pipeline stage:
 llm.script.tokens_in       llm.script.tokens_out
 llm.metadata.tokens_in     llm.metadata.tokens_out
 image                      video.seconds
-tts.chars                  bgm.seconds
-upload
+tts.chars                  upload
 ```
 
 Naming by billed unit is what makes the taxonomy survive vendor changes. Swapping the image
@@ -46,9 +45,11 @@ vendor's pricing page — no deploy, no code review, no release to reprice. The 
 permitted is a rate card checked into the repository, because a stale rate card is worse than no
 rate card: it looks authoritative and quietly lies.
 
-Cost tracking is itself toggleable. When disabled, a null tracker satisfies the same interface —
-no rate query, no cost writes, no per-job stamp — so the pipeline runs identically during testing
-phases without accumulating meaningless cost data.
+Cost tracking is toggleable, and **it is currently disabled.** A config flag installs a null
+tracker satisfying the same interface — no rate query, no cost writes, no per-job stamp — so the
+pipeline runs identically without accumulating cost data. The machinery below is implemented and
+wired; it is not presently recording. The rate table also needs populating before any stamped
+figure would be meaningful.
 
 ## Per-job stamping
 
@@ -65,6 +66,7 @@ The accounting exists to support one insight, which is the thing that actually d
 
 ```
 CG      — FREE        Rendered declaratively. Costs nothing per episode.
+music   — FREE        Operator-supplied. Never generated, never billed.
 LLM     — TRIVIAL     Script and metadata generation. Never worth optimizing.
 image   — MODEST      A generated still. Real, but small.
 video   — DOMINANT    A generated motion clip. More than everything
